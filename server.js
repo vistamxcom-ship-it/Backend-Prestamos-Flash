@@ -46,40 +46,14 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // HELPERS
 // ═══════════════════════════════════════
 
-// Subir archivo a Supabase Storage
-async function uploadFile(file, folio, fieldName) {
-  if (!file) return null;
-
-  try {
-    const ext = file.originalname.split('.').pop();
-    const fileName = `${folio}/${fieldName}_${Date.now()}.${ext}`;
-
-    const { data, error } = await supabase.storage
-      .from('Pestamos Flash')
-      .upload(fileName, file.buffer, {
-        contentType: file.mimetype,
-        upsert: false
-      });
-
-    if (error) {
-      console.error(`Error subiendo ${fieldName}:`, error);
-      return null;
-    }
-
-    // Obtener URL pública
-    const { data: publicData } = supabase.storage
-      .from('Pestamos Flash')
-      .getPublicUrl(fileName);
-
-    return {
-      fileName: fileName,
-      publicUrl: publicData?.publicUrl || null,
-      size: file.size
-    };
-  } catch (err) {
-    console.error(`Error en uploadFile ${fieldName}:`, err);
-    return null;
-  }
+// Convertir archivo a base64 para guardar en Supabase
+async function fileToBase64(file) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(file);
+  });
 }
 
 // ═══════════════════════════════════════
@@ -179,18 +153,27 @@ app.post('/api/solicitudes', upload.fields([
     };
 
     // Insertar en Supabase
+    console.log('🔍 Datos que se van a insertar:', JSON.stringify(dataToInsert, null, 2));
+    
     const { data, error } = await supabase
       .from('solicitudes_credito')
       .insert([dataToInsert])
       .select();
 
     if (error) {
-      console.error('Supabase error:', error);
+      console.error('❌ Supabase error:', JSON.stringify(error, null, 2));
+      console.error('❌ Código:', error.code);
+      console.error('❌ Mensaje:', error.message);
+      console.error('❌ Details:', error.details);
       return res.status(400).json({
         success: false,
-        error: error.message
+        error: error.message,
+        code: error.code,
+        details: error.details
       });
     }
+    
+    console.log('✅ Datos insertados en Supabase:', data);
 
     res.status(201).json({
       success: true,
