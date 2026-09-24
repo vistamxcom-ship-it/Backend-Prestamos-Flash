@@ -50,9 +50,10 @@ setInterval(() => {
 
 app.post('/api/solicitudes', upload.any(), async (req, res) => {
   try {
-    console.log(`\n📥 Solicitud recibida`);
+    console.log(`\n📥 Solicitud recibida en /api/solicitudes`);
     console.log(`   Files: ${req.files ? req.files.length : 0}`);
     console.log(`   Body keys: ${Object.keys(req.body).join(', ')}`);
+    console.log(`   Body completo:`, JSON.stringify(req.body, null, 2));
     
     if (req.files && req.files.length > 0) {
       req.files.forEach(f => {
@@ -61,16 +62,26 @@ app.post('/api/solicitudes', upload.any(), async (req, res) => {
     }
 
     const folio = req.body.folio || 'PF-' + Date.now();
-    let solicitudData;
+    let solicitudData = {};
 
-    try {
-      solicitudData = JSON.parse(req.body.data || req.body.dataSolicitud || '{}');
-    } catch {
+    // Parsear datos
+    if (req.body.data) {
+      try {
+        solicitudData = JSON.parse(req.body.data);
+        console.log(`✅ JSON parseado correctamente`);
+      } catch (e) {
+        console.error(`❌ Error parseando JSON:`, e.message);
+        solicitudData = req.body;
+      }
+    } else {
+      console.warn(`⚠️ No hay campo 'data' en req.body`);
       solicitudData = req.body;
     }
 
     console.log(`   📋 Folio: ${folio}`);
     console.log(`   👤 Nombre: ${solicitudData.solicitante?.nombre || 'N/A'}`);
+    console.log(`   📧 Email: ${solicitudData.solicitante?.email || 'N/A'}`);
+    console.log(`   💰 Monto: ${solicitudData.credito?.monto_solicitado || 'N/A'}`);
 
     // URLs de documentos que se suban
     const documentosUrls = {};
@@ -157,7 +168,9 @@ app.post('/api/solicitudes', upload.any(), async (req, res) => {
     console.log(`\n💾 Guardando en Supabase (tabla: solicitudes_credito)`);
     console.log(`   Folio: ${dataToInsert.folio}`);
     console.log(`   Nombre: ${dataToInsert.nombre}`);
+    console.log(`   Email: ${dataToInsert.email}`);
     console.log(`   Documentos subidos: ${Object.keys(documentosUrls).length}`);
+    console.log(`   Data a insertar:`, JSON.stringify(dataToInsert, null, 2));
 
     // Guardar en tabla de Supabase
     const { data, error } = await supabase
@@ -169,10 +182,12 @@ app.post('/api/solicitudes', upload.any(), async (req, res) => {
       console.error('❌ Error Supabase:', error);
       console.error('   Código:', error.code);
       console.error('   Mensaje:', error.message);
+      console.error('   Details:', error.details);
       return res.status(500).json({ 
         success: false,
         error: error.message,
-        code: error.code
+        code: error.code,
+        details: error.details
       });
     }
 
@@ -189,6 +204,7 @@ app.post('/api/solicitudes', upload.any(), async (req, res) => {
 
   } catch (error) {
     console.error('❌ Error:', error.message);
+    console.error('   Stack:', error.stack);
     res.status(500).json({
       success: false,
       error: error.message
