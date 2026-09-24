@@ -1,324 +1,222 @@
-import express from 'express';
-import cors from 'cors';
-import dotenv from 'dotenv';
-import { createClient } from '@supabase/supabase-js';
-import { v4 as uuidv4 } from 'uuid';
-import multer from 'multer';
+/**
+ * PRESTAMOSFLASH - BACKEND NOTIFICACIONES + ALMACENAMIENTO
+ * Recibe solicitudes, guarda en Supabase, almacena documentos
+ * 
+ * npm install express cors multer supabase dotenv
+ * node server.js
+ */
 
-dotenv.config();
+const express = require('express');
+const cors = require('cors');
+const multer = require('multer');
+const { createClient } = require('@supabase/supabase-js');
+require('dotenv').config();
 
 const app = express();
+const PORT = process.env.PORT || 2000;
 
-// ═══════════════════════════════════════
-// SUPABASE CONFIG
-// ═══════════════════════════════════════
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
-);
+// ═══════════════════════════════════════════════════════════
+// VARIABLES DE ENTORNO (.env)
+// ═══════════════════════════════════════════════════════════
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
-// ═══════════════════════════════════════
-// MULTER CONFIG
-// ═══════════════════════════════════════
-const upload = multer({ 
+// Inicializar Supabase - desactiva Realtime para Node 20
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: { persistSession: false }
+});
+
+// Middleware
+app.use(cors());
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ limit: '100mb', extended: true }));
+
+// Multer para archivos
+const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 } // 50MB max
+  limits: { fileSize: 100 * 1024 * 1024 } // 100MB
 });
 
-// ═══════════════════════════════════════
-// MIDDLEWARE
-// ═══════════════════════════════════════
-app.use(cors({
-  origin: [
-    'http://localhost:2000',
-    'http://localhost:3000',
-    process.env.FRONTEND_URL || '*'
-  ],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  credentials: true,
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
+// ═══════════════════════════════════════════════════════════
+// KEEP-ALIVE: Auto-ping para mantener el servidor despierto
+// ═══════════════════════════════════════════════════════════
+setInterval(() => {
+  fetch(`http://localhost:${PORT}/health`).catch(() => {});
+}, 5 * 60 * 1000); // Cada 5 minutos
 
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+// ═══════════════════════════════════════════════════════════
+// ENDPOINT PRINCIPAL
+// ═══════════════════════════════════════════════════════════
 
-// ═══════════════════════════════════════
-// HELPERS
-// ═══════════════════════════════════════
-
-// Convertir archivo a base64 para guardar en Supabase
-async function fileToBase64(file) {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => resolve(null);
-    reader.readAsDataURL(file);
-  });
-}
-
-// ═══════════════════════════════════════
-// RUTAS
-// ═══════════════════════════════════════
-
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
-});
-
-// Crear nueva solicitud de crédito CON ARCHIVOS
-app.post('/api/solicitudes', upload.fields([
-  { name: 'ineF', maxCount: 1 },
-  { name: 'ineR', maxCount: 1 },
-  { name: 'recServ', maxCount: 1 },
-  { name: 'casa', maxCount: 1 },
-  { name: 'garantia', maxCount: 1 },
-  { name: 'video', maxCount: 1 },
-  { name: 'social', maxCount: 1 }
-]), async (req, res) => {
+app.post('/api/solicitudes', upload.any(), async (req, res) => {
   try {
-    // Parsear JSON del formulario
-    let solicitud = {};
-    if (req.body.data) {
-      solicitud = JSON.parse(req.body.data);
-    } else {
-      solicitud = req.body;
+    console.log(`\n📥 Solicitud recibida`);
+    console.log(`   Files: ${req.files ? req.files.length : 0}`);
+    console.log(`   Body keys: ${Object.keys(req.body).join(', ')}`);
+    
+    if (req.files && req.files.length > 0) {
+      req.files.forEach(f => {
+        console.log(`   📄 ${f.fieldname}: ${f.originalname} (${f.size} bytes)`);
+      });
     }
 
-    // Generar ID único
-    const id = uuidv4();
-    const folio = solicitud.folio || `PF-${id.substring(0, 8).toUpperCase()}`;
+    const folio = req.body.folio || 'PF-' + Date.now();
+    let solicitudData;
 
-    // Subir todos los archivos en paralelo
-    const uploadPromises = {
-      ineF: uploadFile(req.files?.ineF?.[0], folio, 'ine_frente'),
-      ineR: uploadFile(req.files?.ineR?.[0], folio, 'ine_reverso'),
-      recServ: uploadFile(req.files?.recServ?.[0], folio, 'comprobante_domicilio'),
-      casa: uploadFile(req.files?.casa?.[0], folio, 'foto_domicilio'),
-      garantia: uploadFile(req.files?.garantia?.[0], folio, 'foto_garantia'),
-      video: uploadFile(req.files?.video?.[0], folio, 'video_verificacion'),
-      social: uploadFile(req.files?.social?.[0], folio, 'perfil_social')
-    };
+    try {
+      solicitudData = JSON.parse(req.body.data || req.body.dataSolicitud || '{}');
+    } catch {
+      solicitudData = req.body;
+    }
 
-    const uploadResults = await Promise.all(Object.values(uploadPromises));
-    const [ineF, ineR, recServ, casa, garantia, video, social] = uploadResults;
+    console.log(`   📋 Folio: ${folio}`);
+    console.log(`   👤 Nombre: ${solicitudData.solicitante?.nombre || 'N/A'}`);
 
-    // Preparar datos para insertar
+    // URLs de documentos que se suban
+    const documentosUrls = {};
+
+    // Procesar y subir documentos a Supabase Storage
+    if (req.files && req.files.length > 0) {
+      for (const file of req.files) {
+        try {
+          const ext = file.originalname.substring(file.originalname.lastIndexOf('.'));
+          const fileName = `${folio}/${file.fieldname}-${Date.now()}${ext}`;
+          
+          console.log(`   ⬆️ Subiendo: ${fileName}`);
+          
+          // Subir a Supabase Storage
+          const { data, error } = await supabase.storage
+            .from('Pestamos Flash')
+            .upload(fileName, file.buffer, {
+              contentType: file.mimetype
+            });
+
+          if (error) {
+            console.error(`   ❌ Error subiendo ${file.fieldname}:`, error.message);
+          } else {
+            console.log(`   ✅ Subido: ${file.fieldname}`);
+            
+            // Obtener URL pública
+            const { data: publicUrlData } = supabase.storage
+              .from('Pestamos Flash')
+              .getPublicUrl(fileName);
+
+            documentosUrls[file.fieldname] = {
+              filename: file.originalname,
+              url: publicUrlData.publicUrl,
+              size: file.size,
+              type: file.mimetype
+            };
+          }
+        } catch (e) {
+          console.error(`   ❌ Error procesando ${file.fieldname}:`, e.message);
+        }
+      }
+    }
+
+    // Estructura para insertar en solicitudes_credito
     const dataToInsert = {
-      id: id,
       folio: folio,
-      timestamp: solicitud.timestamp || new Date().toISOString(),
-      nombre: solicitud.solicitante?.nombre,
-      telefono: solicitud.solicitante?.telefono,
-      whatsapp: solicitud.solicitante?.whatsapp,
-      email: solicitud.solicitante?.email,
-      curp: solicitud.solicitante?.curp,
-      direccion: solicitud.ubicacion?.direccion,
-      gps_lat: solicitud.ubicacion?.gps?.lat,
-      gps_lng: solicitud.ubicacion?.gps?.lng,
-      gps_precision: solicitud.ubicacion?.gps?.precision,
-      monto_solicitado: solicitud.credito?.monto_solicitado,
-      destino_credito: solicitud.credito?.destino,
-      ocupacion: solicitud.credito?.ocupacion,
-      ingresos_mensuales: solicitud.credito?.ingresos_mensuales,
-      ref1_nombre: solicitud.referencias?.ref1?.nombre,
-      ref1_telefono: solicitud.referencias?.ref1?.telefono,
-      ref2_nombre: solicitud.referencias?.ref2?.nombre,
-      ref2_telefono: solicitud.referencias?.ref2?.telefono,
+      timestamp: solicitudData.timestamp || new Date().toISOString(),
+      nombre: solicitudData.solicitante?.nombre,
+      telefono: solicitudData.solicitante?.telefono,
+      whatsapp: solicitudData.solicitante?.whatsapp,
+      email: solicitudData.solicitante?.email,
+      curp: solicitudData.solicitante?.curp,
+      direccion: solicitudData.ubicacion?.direccion,
+      gps_lat: solicitudData.ubicacion?.gps?.lat,
+      gps_lng: solicitudData.ubicacion?.gps?.lng,
+      gps_precision: solicitudData.ubicacion?.gps?.precision,
+      monto_solicitado: solicitudData.credito?.monto_solicitado,
+      destino_credito: solicitudData.credito?.destino,
+      ocupacion: solicitudData.credito?.ocupacion,
+      ingresos_mensuales: solicitudData.credito?.ingresos_mensuales,
+      ref1_nombre: solicitudData.referencias?.ref1?.nombre,
+      ref1_telefono: solicitudData.referencias?.ref1?.telefono,
+      ref2_nombre: solicitudData.referencias?.ref2?.nombre,
+      ref2_telefono: solicitudData.referencias?.ref2?.telefono,
       
       // URLs de documentos
-      documentos_ine_frente: ineF?.publicUrl,
-      documentos_ine_reverso: ineR?.publicUrl,
-      documentos_comprobante: recServ?.publicUrl,
-      documentos_foto_domicilio: casa?.publicUrl,
-      documentos_foto_garantia: garantia?.publicUrl,
-      documentos_video: video?.publicUrl,
-      documentos_social: social?.publicUrl,
+      documentos_ine_frente: documentosUrls.ineF?.url,
+      documentos_ine_reverso: documentosUrls.ineR?.url,
+      documentos_comprobante: documentosUrls.recServ?.url,
+      documentos_foto_domicilio: documentosUrls.casa?.url,
+      documentos_foto_garantia: documentosUrls.garantia?.url,
+      documentos_video: documentosUrls.video?.url,
+      documentos_social: documentosUrls.social?.url,
       
-      // Metadata de archivos
-      documentos_ine_frente_meta: ineF ? JSON.stringify({ fileName: ineF.fileName, size: ineF.size }) : null,
-      documentos_ine_reverso_meta: ineR ? JSON.stringify({ fileName: ineR.fileName, size: ineR.size }) : null,
-      documentos_comprobante_meta: recServ ? JSON.stringify({ fileName: recServ.fileName, size: recServ.size }) : null,
-      documentos_foto_domicilio_meta: casa ? JSON.stringify({ fileName: casa.fileName, size: casa.size }) : null,
-      documentos_foto_garantia_meta: garantia ? JSON.stringify({ fileName: garantia.fileName, size: garantia.size }) : null,
-      documentos_video_meta: video ? JSON.stringify({ fileName: video.fileName, size: video.size }) : null,
-      documentos_social_meta: social ? JSON.stringify({ fileName: social.fileName, size: social.size }) : null,
-      
-      acepta_terminos: solicitud.aceptaciones?.terminos,
-      acepta_contacto: solicitud.aceptaciones?.contacto,
-      acepta_verifiedad: solicitud.aceptaciones?.verifiedad_datos,
-      acepta_gps: solicitud.aceptaciones?.gps,
-      estado: solicitud.estado || 'pendiente',
-      fecha_solicitud: solicitud.fecha_solicitud,
-      datos_json: solicitud
+      acepta_terminos: solicitudData.aceptaciones?.terminos,
+      acepta_contacto: solicitudData.aceptaciones?.contacto,
+      acepta_verifiedad: solicitudData.aceptaciones?.verifiedad_datos,
+      acepta_gps: solicitudData.aceptaciones?.gps,
+      estado: solicitudData.estado || 'pendiente',
+      fecha_solicitud: solicitudData.fecha_solicitud,
+      datos_json: solicitudData
     };
 
-    // Insertar en Supabase
-    console.log('🔍 Datos que se van a insertar:', JSON.stringify(dataToInsert, null, 2));
-    
+    console.log(`\n💾 Guardando en Supabase (tabla: solicitudes_credito)`);
+    console.log(`   Folio: ${dataToInsert.folio}`);
+    console.log(`   Nombre: ${dataToInsert.nombre}`);
+    console.log(`   Documentos subidos: ${Object.keys(documentosUrls).length}`);
+
+    // Guardar en tabla de Supabase
     const { data, error } = await supabase
       .from('solicitudes_credito')
       .insert([dataToInsert])
       .select();
 
     if (error) {
-      console.error('❌ Supabase error:', JSON.stringify(error, null, 2));
-      console.error('❌ Código:', error.code);
-      console.error('❌ Mensaje:', error.message);
-      console.error('❌ Details:', error.details);
-      return res.status(400).json({
+      console.error('❌ Error Supabase:', error);
+      console.error('   Código:', error.code);
+      console.error('   Mensaje:', error.message);
+      return res.status(500).json({ 
         success: false,
         error: error.message,
-        code: error.code,
-        details: error.details
+        code: error.code
       });
     }
-    
-    console.log('✅ Datos insertados en Supabase:', data);
 
-    res.status(201).json({
+    console.log(`✅ Solicitud ${folio} guardada en Supabase`);
+    console.log(`📁 Documentos almacenados: ${Object.keys(documentosUrls).length}`);
+
+    res.json({
       success: true,
+      mensaje: 'Solicitud guardada en Supabase',
       folio: folio,
-      id: id,
-      timestamp: new Date().toISOString(),
-      message: 'Solicitud registrada correctamente',
-      documentos: {
-        ineF: !!ineF,
-        ineR: !!ineR,
-        recServ: !!recServ,
-        casa: !!casa,
-        garantia: !!garantia,
-        video: !!video,
-        social: !!social
-      }
+      documentosGuardados: Object.keys(documentosUrls).length,
+      documentos: documentosUrls
     });
 
-  } catch (err) {
-    console.error('Error:', err);
+  } catch (error) {
+    console.error('❌ Error:', error.message);
     res.status(500).json({
       success: false,
-      error: err.message
+      error: error.message
     });
   }
 });
 
-// Obtener solicitud por folio
-app.get('/api/solicitudes/:folio', async (req, res) => {
-  try {
-    const { folio } = req.params;
-
-    const { data, error } = await supabase
-      .from('solicitudes_credito')
-      .select('*')
-      .eq('folio', folio)
-      .single();
-
-    if (error) {
-      return res.status(404).json({
-        success: false,
-        error: 'Solicitud no encontrada'
-      });
-    }
-
-    res.json({
-      success: true,
-      data: data
-    });
-
-  } catch (err) {
-    res.status(500).json({
-      success: false,
-      error: err.message
-    });
-  }
+// Health check (IMPORTANTE: Render lo usa para saber si está vivo)
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    supabase: SUPABASE_URL ? '✅' : '❌'
+  });
 });
 
-// Listar todas las solicitudes (con paginación)
-app.get('/api/solicitudes', async (req, res) => {
-  try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
-    const offset = (page - 1) * limit;
+// ═══════════════════════════════════════════════════════════
+// INICIAR
+// ═══════════════════════════════════════════════════════════
 
-    const { data, count, error } = await supabase
-      .from('solicitudes_credito')
-      .select('*', { count: 'exact' })
-      .order('timestamp', { ascending: false })
-      .range(offset, offset + limit - 1);
-
-    if (error) {
-      return res.status(400).json({
-        success: false,
-        error: error.message
-      });
-    }
-
-    res.json({
-      success: true,
-      data: data,
-      pagination: {
-        page: page,
-        limit: limit,
-        total: count,
-        pages: Math.ceil(count / limit)
-      }
-    });
-
-  } catch (err) {
-    res.status(500).json({
-      success: false,
-      error: err.message
-    });
-  }
-});
-
-// Actualizar estado de solicitud
-app.put('/api/solicitudes/:folio', async (req, res) => {
-  try {
-    const { folio } = req.params;
-    const { estado, notas } = req.body;
-
-    const updateData = {
-      estado: estado,
-      updated_at: new Date().toISOString()
-    };
-
-    if (notas) {
-      updateData.notas = notas;
-    }
-
-    const { data, error } = await supabase
-      .from('solicitudes_credito')
-      .update(updateData)
-      .eq('folio', folio)
-      .select();
-
-    if (error) {
-      return res.status(400).json({
-        success: false,
-        error: error.message
-      });
-    }
-
-    res.json({
-      success: true,
-      data: data[0],
-      message: 'Solicitud actualizada'
-    });
-
-  } catch (err) {
-    res.status(500).json({
-      success: false,
-      error: err.message
-    });
-  }
-});
-
-// ═══════════════════════════════════════
-// INICIAR SERVIDOR
-// ═══════════════════════════════════════
-const PORT = process.env.PORT || 2000;
 app.listen(PORT, () => {
-  console.log(`🚀 Backend PrestamosFlash activo en puerto ${PORT}`);
-  console.log(`Ambiente: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`CORS origin: ${process.env.FRONTEND_URL || 'cualquiera'}`);
+  console.log('════════════════════════════════════════════════════════════');
+  console.log(`🌐 Backend PrestamosFlash en http://localhost:${PORT}`);
+  console.log('════════════════════════════════════════════════════════════');
+  console.log(`✅ Supabase: ${SUPABASE_URL ? 'Conectado' : '❌ NO CONFIGURADO'}`);
+  console.log('════════════════════════════════════════════════════════════');
+  console.log(`📝 ENDPOINTS:`);
+  console.log(`   POST /api/solicitudes → Recibir solicitud + documentos`);
+  console.log(`   GET  /health          → Estado`);
+  console.log('════════════════════════════════════════════════════════════');
 });
