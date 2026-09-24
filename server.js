@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
 import { v4 as uuidv4 } from 'uuid';
+import multer from 'multer';
 
 dotenv.config();
 
@@ -17,6 +18,14 @@ const supabase = createClient(
 );
 
 // ═══════════════════════════════════════
+// MULTER CONFIG
+// ═══════════════════════════════════════
+const upload = multer({ 
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 } // 50MB max
+});
+
+// ═══════════════════════════════════════
 // MIDDLEWARE
 // ═══════════════════════════════════════
 app.use(cors({
@@ -29,6 +38,46 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // ═══════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════
+
+// Subir archivo a Supabase Storage
+async function uploadFile(file, folio, fieldName) {
+  if (!file) return null;
+
+  try {
+    const ext = file.originalname.split('.').pop();
+    const fileName = `${folio}/${fieldName}_${Date.now()}.${ext}`;
+
+    const { data, error } = await supabase.storage
+      .from('Pestamos Flash')
+      .upload(fileName, file.buffer, {
+        contentType: file.mimetype,
+        upsert: false
+      });
+
+    if (error) {
+      console.error(`Error subiendo ${fieldName}:`, error);
+      return null;
+    }
+
+    // Obtener URL pública
+    const { data: publicData } = supabase.storage
+      .from(bucket)
+      .getPublicUrl(fileName);
+
+    return {
+      fileName: fileName,
+      publicUrl: publicData?.publicUrl || null,
+      size: file.size
+    };
+  } catch (err) {
+    console.error(`Error en uploadFile ${fieldName}:`, err);
+    return null;
+  }
+}
+
+// ═══════════════════════════════════════
 // RUTAS
 // ═══════════════════════════════════════
 
@@ -37,14 +86,42 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
-// Crear nueva solicitud de crédito
-app.post('/api/solicitudes', async (req, res) => {
+// Crear nueva solicitud de crédito CON ARCHIVOS
+app.post('/api/solicitudes', upload.fields([
+  { name: 'ineF', maxCount: 1 },
+  { name: 'ineR', maxCount: 1 },
+  { name: 'recServ', maxCount: 1 },
+  { name: 'casa', maxCount: 1 },
+  { name: 'garantia', maxCount: 1 },
+  { name: 'video', maxCount: 1 },
+  { name: 'social', maxCount: 1 }
+]), async (req, res) => {
   try {
-    const solicitud = req.body;
+    // Parsear JSON del formulario
+    let solicitud = {};
+    if (req.body.data) {
+      solicitud = JSON.parse(req.body.data);
+    } else {
+      solicitud = req.body;
+    }
 
-    // Generar ID único si no existe folio
+    // Generar ID único
     const id = uuidv4();
     const folio = solicitud.folio || `PF-${id.substring(0, 8).toUpperCase()}`;
+
+    // Subir todos los archivos en paralelo
+    const uploadPromises = {
+      ineF: uploadFile(req.files?.ineF?.[0], folio, 'ine_frente'),
+      ineR: uploadFile(req.files?.ineR?.[0], folio, 'ine_reverso'),
+      recServ: uploadFile(req.files?.recServ?.[0], folio, 'comprobante_domicilio'),
+      casa: uploadFile(req.files?.casa?.[0], folio, 'foto_domicilio'),
+      garantia: uploadFile(req.files?.garantia?.[0], folio, 'foto_garantia'),
+      video: uploadFile(req.files?.video?.[0], folio, 'video_verificacion'),
+      social: uploadFile(req.files?.social?.[0], folio, 'perfil_social')
+    };
+
+    const uploadResults = await Promise.all(Object.values(uploadPromises));
+    const [ineF, ineR, recServ, casa, garantia, video, social] = uploadResults;
 
     // Preparar datos para insertar
     const dataToInsert = {
@@ -68,13 +145,25 @@ app.post('/api/solicitudes', async (req, res) => {
       ref1_telefono: solicitud.referencias?.ref1?.telefono,
       ref2_nombre: solicitud.referencias?.ref2?.nombre,
       ref2_telefono: solicitud.referencias?.ref2?.telefono,
-      documentos_ine_frente: solicitud.documentos?.ine_frente,
-      documentos_ine_reverso: solicitud.documentos?.ine_reverso,
-      documentos_comprobante: solicitud.documentos?.comprobante_domicilio,
-      documentos_foto_domicilio: solicitud.documentos?.foto_domicilio,
-      documentos_foto_garantia: solicitud.documentos?.foto_garantia,
-      documentos_video: solicitud.documentos?.video_verificacion,
-      documentos_social: solicitud.documentos?.perfil_social,
+      
+      // URLs de documentos
+      documentos_ine_frente: ineF?.publicUrl,
+      documentos_ine_reverso: ineR?.publicUrl,
+      documentos_comprobante: recServ?.publicUrl,
+      documentos_foto_domicilio: casa?.publicUrl,
+      documentos_foto_garantia: garantia?.publicUrl,
+      documentos_video: video?.publicUrl,
+      documentos_social: social?.publicUrl,
+      
+      // Metadata de archivos
+      documentos_ine_frente_meta: ineF ? JSON.stringify({ fileName: ineF.fileName, size: ineF.size }) : null,
+      documentos_ine_reverso_meta: ineR ? JSON.stringify({ fileName: ineR.fileName, size: ineR.size }) : null,
+      documentos_comprobante_meta: recServ ? JSON.stringify({ fileName: recServ.fileName, size: recServ.size }) : null,
+      documentos_foto_domicilio_meta: casa ? JSON.stringify({ fileName: casa.fileName, size: casa.size }) : null,
+      documentos_foto_garantia_meta: garantia ? JSON.stringify({ fileName: garantia.fileName, size: garantia.size }) : null,
+      documentos_video_meta: video ? JSON.stringify({ fileName: video.fileName, size: video.size }) : null,
+      documentos_social_meta: social ? JSON.stringify({ fileName: social.fileName, size: social.size }) : null,
+      
       acepta_terminos: solicitud.aceptaciones?.terminos,
       acepta_contacto: solicitud.aceptaciones?.contacto,
       acepta_verifiedad: solicitud.aceptaciones?.verifiedad_datos,
@@ -103,7 +192,16 @@ app.post('/api/solicitudes', async (req, res) => {
       folio: folio,
       id: id,
       timestamp: new Date().toISOString(),
-      message: 'Solicitud registrada correctamente'
+      message: 'Solicitud registrada correctamente',
+      documentos: {
+        ineF: !!ineF,
+        ineR: !!ineR,
+        recServ: !!recServ,
+        casa: !!casa,
+        garantia: !!garantia,
+        video: !!video,
+        social: !!social
+      }
     });
 
   } catch (err) {
@@ -228,10 +326,11 @@ app.put('/api/solicitudes/:folio', async (req, res) => {
 });
 
 // ═══════════════════════════════════════
-// INICIAR SERVIDOR EN PUERTO 2000
+// INICIAR SERVIDOR
 // ═══════════════════════════════════════
-const PORT = 2000;
+const PORT = process.env.PORT || 2000;
 app.listen(PORT, () => {
   console.log(`🚀 Backend PrestamosFlash activo en puerto ${PORT}`);
   console.log(`Ambiente: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`CORS origin: ${process.env.FRONTEND_URL || 'cualquiera'}`);
 });
