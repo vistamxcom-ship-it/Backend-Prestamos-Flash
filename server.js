@@ -7,7 +7,6 @@ import { v4 as uuidv4 } from 'uuid';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
 // ═══════════════════════════════════════
 // SUPABASE CONFIG
@@ -229,8 +228,9 @@ app.put('/api/solicitudes/:folio', async (req, res) => {
 });
 
 // ═══════════════════════════════════════
-// INICIAR SERVIDOR
+// INICIAR SERVIDOR EN PUERTO 2000
 // ═══════════════════════════════════════
+const PORT = 2000;
 app.listen(PORT, () => {
   console.log(`🚀 Backend PrestamosFlash activo en puerto ${PORT}`);
   console.log(`Ambiente: ${process.env.NODE_ENV || 'development'}`);
