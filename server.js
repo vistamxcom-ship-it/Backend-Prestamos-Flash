@@ -68,7 +68,7 @@ async function uploadFile(file, folio, fieldName) {
 
     // Obtener URL pública
     const { data: publicData } = supabase.storage
-      .from(bucket)
+      .from('Pestamos Flash')
       .getPublicUrl(fileName);
 
     return {
