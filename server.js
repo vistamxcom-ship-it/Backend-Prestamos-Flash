@@ -97,9 +97,9 @@ app.post('/api/solicitudes', upload.any(), async (req, res) => {
           
           console.log(`   ⬆️ Subiendo: ${fileName}`);
           
-          // Subir a Supabase Storage
+          // Subir a Supabase Storage con el bucket correcto
           const { data, error } = await supabase.storage
-            .from('Pestamos Flash')
+            .from('Prestamos Flash')
             .upload(fileName, file.buffer, {
               contentType: file.mimetype
             });
@@ -111,7 +111,7 @@ app.post('/api/solicitudes', upload.any(), async (req, res) => {
             
             // Obtener URL pública
             const { data: publicUrlData } = supabase.storage
-              .from('Pestamos Flash')
+              .from('Prestamos Flash')
               .getPublicUrl(fileName);
 
             documentosUrls[file.fieldname] = {
@@ -198,10 +198,17 @@ app.post('/api/solicitudes', upload.any(), async (req, res) => {
 
     res.json({
       success: true,
-      mensaje: 'Solicitud guardada en Supabase',
+      mensaje: 'Solicitud guardada en Supabase correctamente',
       folio: folio,
-      documentosGuardados: Object.keys(documentosUrls).length,
-      documentos: documentosUrls
+      id: folio,
+      documentosSubidos: Object.keys(documentosUrls).length,
+      timestamp: new Date().toISOString(),
+      datos: {
+        nombre: dataToInsert.nombre,
+        email: dataToInsert.email,
+        monto: dataToInsert.monto_solicitado,
+        documentos: documentosUrls
+      }
     });
 
   } catch (error) {
